@@ -24,7 +24,7 @@ const SUGGESTIONS = {
   ],
 };
 
-function AgentWelcome({ agent }) {
+function AgentWelcome({ agent, onSuggestion }) {
   return (
     <div className="flex flex-col items-center justify-center h-full py-12 px-6 text-center animate-fade-in">
       <div className={`w-16 h-16 rounded-2xl ${agent.bgClass} border border-app-border2 flex items-center justify-center mb-5`}>
@@ -36,6 +36,7 @@ function AgentWelcome({ agent }) {
         <p className="text-[10px] font-bold text-tx-dim uppercase tracking-widest mb-3">Preguntas sugeridas</p>
         {(SUGGESTIONS[agent.id] || []).map((s, i) => (
           <button key={i}
+            onClick={() => onSuggestion?.(s)}
             className="w-full text-left px-4 py-3 rounded-xl text-sm border transition-all
               border-app-border bg-app-card hover:bg-app-hover text-tx-muted hover:text-tx-primary">
             <span className={`font-semibold ${agent.accentClass} mr-2`}>→</span>{s}
@@ -273,7 +274,7 @@ export default function ChatArea({ agent, onCitedDocument, onSearchResults }) {
       {/* Mensajes */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-4 space-y-5" style={{ overscrollBehavior: "contain" }}>
         {messages.length === 0 && !loading
-          ? <AgentWelcome agent={agent} />
+          ? <AgentWelcome agent={agent} onSuggestion={(text) => { setInput(text); setTimeout(() => inputRef.current?.focus(), 0); }} />
           : messages.map((msg) => <MessageBubble key={msg.id} msg={msg} agent={agent} />)
         }
         {loading && <TypingIndicator agent={agent} />}

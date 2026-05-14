@@ -9,7 +9,7 @@ export default function Header({ darkMode, setDarkMode, onToggleLeft, onToggleRi
       {/* Hamburger izquierdo (mobile) */}
       <button
         onClick={onToggleLeft}
-        className="lg:hidden p-2 rounded-lg text-tx-muted hover:text-tx-primary hover:bg-app-hover transition-colors"
+        className="xl:hidden p-2 rounded-lg text-tx-muted hover:text-tx-primary hover:bg-app-hover transition-colors"
         aria-label="Panel de agentes"
       >
         <Menu size={18} />
@@ -66,7 +66,7 @@ export default function Header({ darkMode, setDarkMode, onToggleLeft, onToggleRi
         {/* Hamburger derecho (mobile) */}
         <button
           onClick={onToggleRight}
-          className="lg:hidden p-2 rounded-lg text-tx-muted hover:text-tx-primary hover:bg-app-hover transition-colors"
+          className="xl:hidden p-2 rounded-lg text-tx-muted hover:text-tx-primary hover:bg-app-hover transition-colors"
           aria-label="Panel de recursos"
         >
           <Menu size={18} />
