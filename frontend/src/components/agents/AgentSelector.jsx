@@ -23,7 +23,7 @@ export default function AgentSelector({ selectedAgent, onSelectAgent, darkMode, 
   const [channelsOpen, setChannelsOpen] = useState(true);
 
   return (
-    <aside className="flex flex-col gap-3 h-full overflow-y-auto pb-4">
+    <aside className="flex min-h-0 flex-col gap-3 pb-4">
 
       {/* ── Encabezado de agentes ── */}
       <div className="rounded-xl border border-app-border bg-app-panel overflow-hidden">

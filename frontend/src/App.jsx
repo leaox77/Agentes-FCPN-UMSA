@@ -50,29 +50,29 @@ export default function App() {
         {/* Overlay móvil */}
         {(leftOpen || rightOpen) && (
           <div
-            className="fixed inset-0 bg-black/60 z-20 lg:hidden backdrop-blur-sm"
+            className="fixed inset-0 bg-black/60 z-20 xl:hidden backdrop-blur-sm"
             onClick={closeAll}
           />
         )}
 
         {/* ── Panel izquierdo (Agentes) ── */}
         <aside className={`
-          w-72 shrink-0 flex flex-col z-30
-          lg:relative lg:translate-x-0 lg:flex lg:z-auto
+          w-[20rem] max-w-[86vw] shrink-0 flex flex-col z-30
+          xl:relative xl:translate-x-0 xl:flex xl:z-auto
           fixed top-14 bottom-0 left-0
           transition-transform duration-300 ease-in-out
           ${darkMode ? "bg-app-bg" : "bg-lt-bg"}
           border-r ${darkMode ? "border-app-border" : "border-lt-border"}
-          ${leftOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"}
+          ${leftOpen ? "translate-x-0" : "-translate-x-full xl:translate-x-0"}
         `}>
           {/* Botón cerrar (solo mobile) */}
           <button
-            className="lg:hidden absolute top-3 right-3 p-1.5 rounded-lg text-tx-muted hover:text-tx-primary hover:bg-app-hover z-10"
+            className="xl:hidden absolute top-3 right-3 p-1.5 rounded-lg text-tx-muted hover:text-tx-primary hover:bg-app-hover z-10"
             onClick={() => setLeftOpen(false)}
           >
             <X size={15} />
           </button>
-          <div className="flex-1 overflow-y-auto p-4">
+          <div className="flex-1 min-h-0 overflow-y-auto p-4">
             <AgentSelector
               selectedAgent={selectedAgent}
               onSelectAgent={handleSelectAgent}
@@ -95,21 +95,21 @@ export default function App() {
 
         {/* ── Panel derecho (Recursos) ── */}
         <aside className={`
-          w-72 shrink-0 flex flex-col z-30
-          lg:relative lg:translate-x-0 lg:flex lg:z-auto
+          w-[20rem] max-w-[86vw] shrink-0 flex flex-col z-30
+          xl:relative xl:translate-x-0 xl:flex xl:z-auto
           fixed top-14 bottom-0 right-0
           transition-transform duration-300 ease-in-out
           ${darkMode ? "bg-app-bg" : "bg-lt-bg"}
           border-l ${darkMode ? "border-app-border" : "border-lt-border"}
-          ${rightOpen ? "translate-x-0" : "translate-x-full lg:translate-x-0"}
+          ${rightOpen ? "translate-x-0" : "translate-x-full xl:translate-x-0"}
         `}>
           <button
-            className="lg:hidden absolute top-3 left-3 p-1.5 rounded-lg text-tx-muted hover:text-tx-primary hover:bg-app-hover z-10"
+            className="xl:hidden absolute top-3 left-3 p-1.5 rounded-lg text-tx-muted hover:text-tx-primary hover:bg-app-hover z-10"
             onClick={() => setRightOpen(false)}
           >
             <X size={15} />
           </button>
-          <div className="flex-1 overflow-y-auto p-4">
+          <div className="flex-1 min-h-0 overflow-y-auto p-4">
             <ResourcesPanel
               citedDocument={citedDocument}
               searchResults={searchResults}

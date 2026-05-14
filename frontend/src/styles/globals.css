@@ -59,3 +59,37 @@
 /* Transición suave del tema */
 * { transition-property: background-color, border-color, color; transition-duration: 200ms; }
 img, svg, button { transition-property: opacity, transform, box-shadow, background-color, border-color, color; transition-duration: 150ms; }
+
+/* Modo claro real: los componentes usan tokens app-*; aquí se remapean sin tocar cada JSX. */
+html:not(.dark) {
+  color-scheme: light;
+}
+
+html:not(.dark) body {
+  background: #f0f4f8;
+  color: #0f172a;
+}
+
+html:not(.dark) .bg-app-bg { background-color: #f0f4f8 !important; }
+html:not(.dark) .bg-app-surface { background-color: #ffffff !important; }
+html:not(.dark) .bg-app-panel { background-color: #ffffff !important; }
+html:not(.dark) .bg-app-card { background-color: #f7fafc !important; }
+html:not(.dark) .bg-app-hover { background-color: #e2e8f0 !important; }
+html:not(.dark) .hover\:bg-app-hover:hover { background-color: #e2e8f0 !important; }
+html:not(.dark) .text-tx-primary { color: #0f172a !important; }
+html:not(.dark) .text-tx-muted { color: #475569 !important; }
+html:not(.dark) .text-tx-dim { color: #64748b !important; }
+html:not(.dark) .placeholder-tx-dim::placeholder { color: #94a3b8 !important; }
+html:not(.dark) .border-app-border,
+html:not(.dark) .border-app-border2 { border-color: #d7dee8 !important; }
+html:not(.dark) .divide-app-border > :not([hidden]) ~ :not([hidden]) { border-color: #d7dee8 !important; }
+html:not(.dark) .shadow-panel,
+html:not(.dark) .shadow-card { box-shadow: 0 12px 32px rgba(15, 23, 42, 0.08) !important; }
+html:not(.dark) .glass-panel { background-color: rgba(255, 255, 255, 0.9); }
+
+@media (max-width: 1279px) {
+  html:not(.dark) .fixed.bg-app-bg,
+  html:not(.dark) aside.bg-app-bg {
+    box-shadow: 0 18px 48px rgba(15, 23, 42, 0.18);
+  }
+}

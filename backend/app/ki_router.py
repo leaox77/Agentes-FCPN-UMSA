@@ -34,7 +34,7 @@ from azure.core.credentials import AzureKeyCredential
 from azure.ai.documentintelligence import DocumentIntelligenceClient
 from azure.ai.documentintelligence.models import AnalyzeDocumentRequest
 from pypdf import PdfReader
-from openai import AzureOpenAI
+from openai import AzureOpenAI, OpenAIError
 
 # ── Configuración (variables prefijadas KI_) ──────────────────────────────
 _OPENAI_ENDPOINT    = os.getenv("KI_AZURE_OPENAI_ENDPOINT", "").rstrip("/")
@@ -61,6 +61,15 @@ _EXTENSIONES_TEXTO: set[str] = {
 def _openai():
     return AzureOpenAI(api_key=_OPENAI_KEY, azure_endpoint=_OPENAI_ENDPOINT,
                        api_version="2024-02-15-preview")
+
+
+def _missing_openai_config() -> list[str]:
+    missing = []
+    if not _OPENAI_ENDPOINT:
+        missing.append("KI_AZURE_OPENAI_ENDPOINT")
+    if not _OPENAI_KEY:
+        missing.append("KI_AZURE_OPENAI_API_KEY")
+    return missing
 
 def _blob():
     return BlobServiceClient.from_connection_string(_STORAGE_CONN)
@@ -114,18 +123,6 @@ _AGENTS = [
         role="Información académica general",
         description="Consultas sobre inscripciones, calendario, trámites y procesos de la FCPN usando documentos institucionales indexados.",
     ),
-    KiAgentInfo(
-        id="agent_tramites",
-        name="Trámites Académicos",
-        role="Gestión de trámites",
-        description="Certificaciones, cambios de carrera, convalidaciones y trámites formales.",
-    ),
-    KiAgentInfo(
-        id="agent_soporte",
-        name="Soporte Técnico",
-        role="Ayuda técnica SIA",
-        description="Problemas con el SIA, recuperación de contraseñas y plataformas digitales.",
-    ),
 ]
 
 # ── Azure AI Search — helpers ─────────────────────────────────────────────
@@ -159,7 +156,14 @@ def _ensure_index_exists():
         ))
         print(f"[KI] Índice '{_SEARCH_INDEX}' creado.")
     except Exception as e:
-        print(f"[KI] Warning al crear índice: {e}")
+        msg = str(e)
+        if "doesn't match service" in msg or "doesn" in msg and "match" in msg:
+            print(
+                "[KI] Azure Search rechazó KI_AZURE_SEARCH_ADMIN_KEY. "
+                "Copia la clave Admin primaria o secundaria del servicio Azure AI Search correcto."
+            )
+        else:
+            print(f"[KI] Warning al crear índice: {e}")
 
 
 def _get_embedding(text: str) -> list[float]:
@@ -293,7 +297,15 @@ router = APIRouter(prefix="/ki", tags=["KI · Asistente General"])
 
 @router.get("/health")
 def ki_health():
-    return {"status": "ok", "module": "KI", "index": _SEARCH_INDEX}
+    missing_openai = _missing_openai_config()
+    return {
+        "status": "ok" if not missing_openai else "degraded",
+        "module": "KI",
+        "index": _SEARCH_INDEX,
+        "openai_ready": not missing_openai,
+        "missing_openai_config": missing_openai,
+        "rag_ready": bool(_SEARCH_ENDPOINT and _SEARCH_ADMIN_KEY and _SEARCH_INDEX),
+    }
 
 
 @router.get("/agents", response_model=list[KiAgentInfo])
@@ -307,7 +319,19 @@ def ki_chat(req: KiChatRequest):
     if not agent:
         raise HTTPException(status_code=404, detail=f"Agente '{req.agent_id}' no encontrado.")
 
-    text, sources, tokens = _generate_response(req.message)
+    missing = _missing_openai_config()
+    if missing:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Variables del Asistente General no configuradas: {', '.join(missing)}.",
+        )
+
+    try:
+        text, sources, tokens = _generate_response(req.message)
+    except OpenAIError as exc:
+        raise HTTPException(status_code=503, detail=f"Azure OpenAI no disponible: {exc}") from exc
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"No se pudo generar la respuesta KI: {exc}") from exc
 
     cited = []
     for i, src in enumerate(sources):
@@ -353,5 +377,8 @@ def ki_sync():
 
 def startup_ki():
     """Llamar desde main.py en el evento startup."""
+    if not (_SEARCH_ENDPOINT and _SEARCH_ADMIN_KEY and _SEARCH_INDEX):
+        print("[KI] Azure Search no configurado; se omite creación/sincronización del índice KI.")
+        return
     _ensure_index_exists()
     _sync_index()

@@ -21,15 +21,20 @@ Docs interactivos:
 
 import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+# Cargar backend/.env ANTES de importar los routers.
+# Los routers leen variables al importarse, por eso el orden es importante.
+_ENV_FILE = Path(__file__).resolve().parents[1] / ".env"
+load_dotenv(_ENV_FILE)
+load_dotenv()
+
 from app.ki_router   import router as ki_router,   startup_ki
 from app.fcpn_router import router as fcpn_router
-
-load_dotenv()
 
 PORT         = int(os.getenv("PORT", 8000))
 CORS_ORIGINS = os.getenv(
