@@ -123,18 +123,6 @@ _AGENTS = [
         role="Información académica general",
         description="Consultas sobre inscripciones, calendario, trámites y procesos de la FCPN usando documentos institucionales indexados.",
     ),
-    KiAgentInfo(
-        id="agent_tramites",
-        name="Trámites Académicos",
-        role="Gestión de trámites",
-        description="Certificaciones, cambios de carrera, convalidaciones y trámites formales.",
-    ),
-    KiAgentInfo(
-        id="agent_soporte",
-        name="Soporte Técnico",
-        role="Ayuda técnica SIA",
-        description="Problemas con el SIA, recuperación de contraseñas y plataformas digitales.",
-    ),
 ]
 
 # ── Azure AI Search — helpers ─────────────────────────────────────────────
@@ -168,7 +156,14 @@ def _ensure_index_exists():
         ))
         print(f"[KI] Índice '{_SEARCH_INDEX}' creado.")
     except Exception as e:
-        print(f"[KI] Warning al crear índice: {e}")
+        msg = str(e)
+        if "doesn't match service" in msg or "doesn" in msg and "match" in msg:
+            print(
+                "[KI] Azure Search rechazó KI_AZURE_SEARCH_ADMIN_KEY. "
+                "Copia la clave Admin primaria o secundaria del servicio Azure AI Search correcto."
+            )
+        else:
+            print(f"[KI] Warning al crear índice: {e}")
 
 
 def _get_embedding(text: str) -> list[float]:
@@ -382,5 +377,8 @@ def ki_sync():
 
 def startup_ki():
     """Llamar desde main.py en el evento startup."""
+    if not (_SEARCH_ENDPOINT and _SEARCH_ADMIN_KEY and _SEARCH_INDEX):
+        print("[KI] Azure Search no configurado; se omite creación/sincronización del índice KI.")
+        return
     _ensure_index_exists()
     _sync_index()

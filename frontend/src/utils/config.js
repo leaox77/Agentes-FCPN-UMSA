@@ -27,18 +27,6 @@ export const AGENTS = [
     borderClass: "border-agent-kardex/30",
     dotClass:    "bg-agent-kardex",
   },
-  {
-    id: "informacion",
-    chatPayloadType: "fcpn",
-    name: "Agente Información",
-    role: "Carreras, trámites y procesos",
-    description:
-      "Información detallada sobre carreras, procesos de cambio, convalidaciones, contactos docentes y eventos institucionales.",
-    accentClass: "text-agent-info",
-    bgClass:     "bg-agent-info/10",
-    borderClass: "border-agent-info/30",
-    dotClass:    "bg-agent-info",
-  },
 ];
 
 // ── Canales de comunicación ───────────────────────────────────────────────
