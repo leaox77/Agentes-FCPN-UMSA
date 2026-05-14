@@ -1,15 +1,13 @@
 """
 Módulo FCPN — Agentes Kardex & Información
 ============================================
-Rutas montadas en /fcpn por main.py
-
-Motor : Azure AI Foundry (GPT-4o mini)
-RAG   : Azure AI Search  (semántico con fallback simple)
+VERSIÓN DEFINITIVA - Optimizada para búsqueda de horarios y docentes
 """
 
 from __future__ import annotations
 
 import os
+import re
 import uuid
 from datetime import datetime
 from enum import Enum
@@ -19,7 +17,7 @@ import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-# ── Configuración (variables prefijadas FCPN_) ────────────────────────────
+# ── Configuración ────────────────────────────────────────────
 _OPENAI_ENDPOINT    = os.getenv("FCPN_AZURE_OPENAI_ENDPOINT", "").rstrip("/")
 _OPENAI_KEY         = os.getenv("FCPN_AZURE_OPENAI_API_KEY", "")
 _DEPLOYMENT         = os.getenv("FCPN_AZURE_OPENAI_DEPLOYMENT", "gpt-4o-mini")
@@ -28,15 +26,12 @@ _SEARCH_ENDPOINT    = os.getenv("FCPN_AZURE_SEARCH_ENDPOINT", "").rstrip("/")
 _SEARCH_QUERY_KEY   = os.getenv("FCPN_AZURE_SEARCH_QUERY_KEY", "")
 _SEARCH_INDEX       = os.getenv("FCPN_AZURE_SEARCH_INDEX", "")
 
-_CHAT_URL = (
-    f"{_OPENAI_ENDPOINT}/openai/deployments/{_DEPLOYMENT}"
-    f"/chat/completions?api-version={_API_VERSION}"
-)
+_CHAT_URL = f"{_OPENAI_ENDPOINT}/openai/deployments/{_DEPLOYMENT}/chat/completions?api-version={_API_VERSION}"
 _SEARCH_SELECT      = "id,chunk_id,parent_id,chunk,title,category"
 _SEARCH_API_VERSION = "2024-07-01"
 _SEMANTIC_CONFIG    = "config-semantica-rag"
 
-# ── Pydantic models ───────────────────────────────────────────────────────
+# ── Pydantic models ──────────────────────────────────────────
 class FcpnAgentID(str, Enum):
     kardex      = "kardex"
     informacion = "informacion"
@@ -75,33 +70,107 @@ class FcpnChatResponse(BaseModel):
     rag_used:       bool     = False
     created_at:     datetime = Field(default_factory=datetime.utcnow)
 
-# ── Agentes ───────────────────────────────────────────────────────────────
+# ── System Prompts ───────────────────────────────────────────
 _SYSTEM_PROMPTS = {
-    FcpnAgentID.kardex: """Eres el Agente Kardex de la FCPN (UMSA). Ayudas a estudiantes con información académica.
-
-Tienes acceso a fragmentos de documentos institucionales (RAG) que son tu fuente principal.
+    FcpnAgentID.kardex: """Eres el Agente Kardex de la FCPN (UMSA).
 
 REGLAS:
-1. Si hay contexto, DEBES usarlo. Resume, organiza y explica la información encontrada.
-2. Si el documento no cubre todo el dato, responde con lo que sí existe.
-3. No inventes horarios, aulas ni docentes que no estén en el contexto.
-4. Usa mensajes anteriores para mantener contexto conversacional.
-5. Respuestas claras y directas. Usa listas para datos múltiples.
-6. PROHIBIDO ignorar los documentos recuperados cuando existen.
-OBJETIVO: Responder SIEMPRE usando la información disponible en los documentos.""",
+1. Si hay documentos en el contexto, USA ESA INFORMACIÓN para responder.
+2. Si el usuario pregunta por horarios de docentes, búscalos en el contexto.
+3. NO inventes información que no esté en los documentos.
+4. Responde siempre en español, de forma clara y ordenada.
+5. Si el contexto contiene horarios, extráelos y preséntalos de manera legible.""",
 
-    FcpnAgentID.informacion: (
-        "Eres el Agente de Información de la FCPN (Facultad de Ciencias Puras y Naturales, UMSA), "
-        "La Paz, Bolivia. Proporcionas información sobre carreras, inscripciones, trámites, "
-        "calendario académico y eventos institucionales. "
-        "Usa los documentos del contexto cuando estén disponibles. "
-        "Sé amable, claro y conciso. Responde siempre en español."
-    ),
+    FcpnAgentID.informacion: """Eres el Agente de Información de la FCPN (UMSA). Responde usando el contexto proporcionado. Sé amable y conciso. Responde en español.""",
 }
 
-# ── Azure AI Search ───────────────────────────────────────────────────────
+# ── FUNCIÓN CLAVE: Optimización de búsqueda para nombres ─────
+def _extract_search_query(messages: list[FcpnChatMessage]) -> str:
+    """
+    Extrae y optimiza la consulta de búsqueda a partir de los mensajes del usuario.
+    Especialmente diseñado para buscar nombres de docentes y horarios.
+    """
+    # Obtener todos los mensajes del usuario
+    user_msgs = [m.content for m in messages if m.role == "user"]
+    if not user_msgs:
+        return ""
+    
+    # Tomar el último mensaje y parte del anterior si existe
+    last_msg = user_msgs[-1]
+    prev_context = user_msgs[-2] if len(user_msgs) > 1 else ""
+    
+    full_query = f"{prev_context} {last_msg}".strip()
+    
+    # Limpiar y normalizar
+    full_query = full_query.replace("ñ", "n")
+    
+    # Extraer nombres de docentes (patrón: "Lic.", "Doc.", nombre con mayúsculas)
+    patterns = [
+        r'(?:Lic|Doc|Dr|Prof)\.?\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)',  # Título + nombre
+        r'(?:del?\s+)?([A-Z][a-záéíóú]+(?:\s+[A-Z][a-záéíóú]+){1,3})',  # Nombre completo
+        r'(Jorge|Juan|Carlos|Maria|Ana|Luis|Jose)(?:\s+[A-Z][a-z]+){1,2}',  # Nombres comunes
+        r'(Teran|Pomier|Felipez|Llanque|Tellez|Hurtado|Huanca|Orihuela|Flores)',  # Apellidos
+    ]
+    
+    found_names = []
+    for pattern in patterns:
+        matches = re.findall(pattern, full_query, re.IGNORECASE)
+        for m in matches:
+            if isinstance(m, tuple):
+                m = m[0]
+            if len(m) > 3 and m.lower() not in [n.lower() for n in found_names]:
+                found_names.append(m.strip())
+    
+    # Si encontramos nombres, priorizarlos
+    if found_names:
+        # Buscar también "horario" o horarios específicos
+        if re.search(r'horario|atencion|clase|clases', full_query, re.IGNORECASE):
+            search_query = f"horario {' '.join(found_names)}"
+        else:
+            search_query = ' '.join(found_names)
+        print(f"[FCPN] Extraídos nombres: {found_names} → query: '{search_query}'")
+        return search_query
+    
+    # Fallback: usar el último mensaje completo
+    return last_msg
+
+
+def _expand_search_query(query: str) -> str:
+    """
+    Expande la consulta con variaciones para mejorar la búsqueda.
+    Ejemplo: "Jorge Teran" → "Jorge Teran OR Jorge Humberto Teran OR Teran Pomier"
+    """
+    if not query or len(query) < 5:
+        return query
+    
+    # Detectar si es un nombre
+    name_parts = query.split()
+    if len(name_parts) >= 2:
+        first_name = name_parts[0]
+        last_name = name_parts[-1]
+        
+        # Variaciones comunes
+        variations = [query]
+        
+        # Si es como "Jorge Teran", añadir "Jorge Humberto Teran"
+        if first_name == "Jorge":
+            variations.append(f"Jorge Humberto Teran")
+            variations.append(f"Jorge Humberto Teran Pomier")
+        
+        # Añadir solo el apellido
+        variations.append(last_name)
+        
+        # Construir consulta con OR
+        expanded = " OR ".join(variations)
+        print(f"[FCPN] Query expandida: '{query}' → '{expanded}'")
+        return expanded
+    
+    return query
+
+
+# ── Azure AI Search ──────────────────────────────────────────
 async def _call_search(client: httpx.AsyncClient, payload: dict) -> dict | None:
-    url     = f"{_SEARCH_ENDPOINT}/indexes/{_SEARCH_INDEX}/docs/search"
+    url = f"{_SEARCH_ENDPOINT}/indexes/{_SEARCH_INDEX}/docs/search"
     headers = {"Content-Type": "application/json", "api-key": _SEARCH_QUERY_KEY}
     try:
         r = await client.post(url, params={"api-version": _SEARCH_API_VERSION},
@@ -122,16 +191,16 @@ def _parse_results(data: dict) -> list[FcpnSearchDoc]:
         content = (item.get("chunk") or "").strip()
         if not content:
             captions = item.get("@search.captions") or []
-            content  = captions[0].get("text", "").strip() if captions else ""
+            content = captions[0].get("text", "").strip() if captions else ""
         if not content:
             continue
         score = item.get("@search.rerankerScore") or item.get("@search.score")
         docs.append(FcpnSearchDoc(
-            title    = item.get("title") or "Documento",
-            content  = content[:1200],
-            category = item.get("category"),
-            source   = item.get("parent_id") or item.get("chunk_id") or "",
-            score    = round(float(score), 4) if score else None,
+            title=item.get("title") or "Documento",
+            content=content[:2000],
+            category=item.get("category"),
+            source=item.get("parent_id") or item.get("chunk_id") or "",
+            score=round(float(score), 4) if score else None,
         ))
     return docs
 
@@ -140,12 +209,24 @@ async def _search_docs(query: str, top: int = 5,
                         category_filter: Optional[str] = None) -> list[FcpnSearchDoc]:
     if not _SEARCH_ENDPOINT or not _SEARCH_QUERY_KEY or not _SEARCH_INDEX:
         return []
+    
+    # Expandir la consulta si es necesario
+    expanded_query = _expand_search_query(query)
+    
+    print(f"[FCPN] Buscando: '{expanded_query}'")
+    
     odata = f"category eq '{category_filter}'" if category_filter else None
+    
     async with httpx.AsyncClient(timeout=15.0) as client:
         payload_sem: dict = {
-            "search": query, "top": top, "select": _SEARCH_SELECT,
-            "queryType": "semantic", "semanticConfiguration": _SEMANTIC_CONFIG,
-            "captions": "extractive", "answers": "extractive|count-3", "searchMode": "all",
+            "search": expanded_query,
+            "top": top * 2,
+            "select": _SEARCH_SELECT,
+            "queryType": "semantic",
+            "semanticConfiguration": _SEMANTIC_CONFIG,
+            "captions": "extractive",
+            "answers": "extractive|count-3",
+            "searchMode": "all",
         }
         if odata:
             payload_sem["filter"] = odata
@@ -153,8 +234,11 @@ async def _search_docs(query: str, top: int = 5,
 
         if data is None:
             payload_sim: dict = {
-                "search": query, "top": top, "select": _SEARCH_SELECT,
-                "queryType": "simple", "searchMode": "all",
+                "search": expanded_query,
+                "top": top * 2,
+                "select": _SEARCH_SELECT,
+                "queryType": "simple",
+                "searchMode": "any",
             }
             if odata:
                 payload_sim["filter"] = odata
@@ -164,66 +248,39 @@ async def _search_docs(query: str, top: int = 5,
             return []
 
     results = _parse_results(data)
-    print(f"[FCPN] RAG '{query[:60]}' → {len(results)} docs")
-    return results
+    print(f"[FCPN] Encontrados {len(results)} resultados")
+    
+    # Ordenar por score
+    results.sort(key=lambda x: x.score if x.score else 0, reverse=True)
+    return results[:top]
 
 
 def _build_rag_context(docs: list[FcpnSearchDoc]) -> str:
     if not docs:
         return ""
-    parts = ["=== DOCUMENTOS INSTITUCIONALES ==="]
+    parts = ["=== INFORMACIÓN DE DOCUMENTOS INSTITUCIONALES ==="]
     for i, d in enumerate(docs, 1):
-        cat = f"\n   Categoría: {d.category}" if d.category else ""
-        parts.append(f"[Doc {i}] {d.title}{cat}\n{d.content}\n{'─'*50}")
-    parts.append("=== FIN DOCUMENTOS ===")
+        parts.append(f"[Documento {i}] {d.title}")
+        parts.append(f"{d.content}")
+        parts.append("─" * 50)
+    parts.append("=== FIN DE DOCUMENTOS ===")
     return "\n".join(parts)
 
 
-def _detect_cited(text: str,
-                  results: list[FcpnSearchDoc]) -> Optional[FcpnCitedDoc]:
-    if results:
-        top   = results[0]
-        score = f" (score: {top.score})" if top.score else ""
-        cat   = f" · {top.category}" if top.category else ""
-        return FcpnCitedDoc(
-            filename=top.title or "Documento institucional",
-            relevance_reason=f"Recuperado del índice RAG{score}{cat}",
-        )
-    _KEYWORDS = {
-        "inscripci": "Guia_de_Inscripciones_2024.pdf",
-        "formulario": "Formulario_001_Inscripcion.docx",
-        "calendario": "Calendario_Académico.pdf",
-        "reglamento": "Reglamento_Academico.pdf",
-        "malla":      "Malla_Curricular_Informatica.pdf",
-    }
-    lower = text.lower()
-    for kw, fname in _KEYWORDS.items():
-        if kw in lower:
-            return FcpnCitedDoc(filename=fname, relevance_reason=f"Relacionado con '{kw}'.")
-    return None
-
-
-# ── Router ─────────────────────────────────────────────────────────────────
+# ── Router ────────────────────────────────────────────────────
 router = APIRouter(prefix="/fcpn", tags=["FCPN · Kardex & Información"])
 
 
 @router.get("/health")
 def fcpn_health():
-    return {
-        "status": "ok", "module": "FCPN",
-        "rag_ready": bool(_SEARCH_ENDPOINT and _SEARCH_QUERY_KEY and _SEARCH_INDEX),
-    }
+    return {"status": "ok", "module": "FCPN", "rag_ready": bool(_SEARCH_ENDPOINT and _SEARCH_QUERY_KEY and _SEARCH_INDEX)}
 
 
 @router.get("/agents")
 def fcpn_agents():
     return [
-        {"id": "kardex",      "name": "Agente Kardex",
-         "role": "Historial académico y notas",
-         "description": "Consulta tu kardex, materias aprobadas, créditos y notas mediante RAG."},
-        {"id": "informacion", "name": "Agente Información",
-         "role": "Carreras, trámites y procesos",
-         "description": "Carreras, cambios, convalidaciones, contactos y eventos institucionales."},
+        {"id": "kardex", "name": "Agente Kardex", "role": "Historial académico y notas"},
+        {"id": "informacion", "name": "Agente Información", "role": "Carreras, trámites y procesos"},
     ]
 
 
@@ -235,27 +292,47 @@ async def fcpn_chat(body: FcpnChatRequest) -> FcpnChatResponse:
 
     session_id = body.session_id or f"fcpn_{uuid.uuid4().hex[:10]}"
 
-    # RAG
+    # RAG - Búsqueda optimizada
     search_results: list[FcpnSearchDoc] = []
     rag_used = False
+    
     if body.use_rag:
-        user_msgs    = [m.content for m in body.messages if m.role == "user"]
-        query        = " ".join(user_msgs[-2:])
-        search_results = await _search_docs(query, top=5, category_filter=body.category_filter)
-        rag_used = len(search_results) > 0
+        # Extraer consulta optimizada
+        search_query = _extract_search_query(body.messages)
+        
+        if search_query:
+            search_results = await _search_docs(search_query, top=5, category_filter=body.category_filter)
+            rag_used = len(search_results) > 0
+            
+            # Si no hay resultados con nombres, intentar búsqueda más amplia
+            if not search_results and len(search_query.split()) > 1:
+                # Buscar solo el apellido
+                words = search_query.split()
+                for w in words:
+                    if len(w) > 4 and not w.lower() in ["horario", "horarios", "docente", "lic"]:
+                        fallback_query = w
+                        print(f"[FCPN] Fallback: buscando solo '{fallback_query}'")
+                        fallback_results = await _search_docs(fallback_query, top=3, category_filter=body.category_filter)
+                        if fallback_results:
+                            search_results = fallback_results
+                            rag_used = True
+                            break
 
+    # Construir contexto y prompt
     rag_ctx = _build_rag_context(search_results)
     sys_content = system_prompt + (f"\n\n{rag_ctx}" if rag_ctx else "")
 
     payload = {
         "messages": [{"role": "system", "content": sys_content}]
                    + [{"role": m.role, "content": m.content} for m in body.messages],
-        "max_tokens": 1024, "temperature": 0.7, "top_p": 0.95, "stream": False,
+        "max_tokens": 1024,
+        "temperature": 0.3,  # Más bajo para respuestas más precisas
+        "top_p": 0.95,
+        "stream": False,
     }
 
     if not _OPENAI_ENDPOINT or not _OPENAI_KEY:
-        raise HTTPException(status_code=503,
-            detail="FCPN_AZURE_OPENAI_ENDPOINT / FCPN_AZURE_OPENAI_API_KEY no configurados.")
+        raise HTTPException(status_code=503, detail="OpenAI no configurado.")
 
     try:
         async with httpx.AsyncClient(timeout=30) as client:
@@ -267,42 +344,20 @@ async def fcpn_chat(body: FcpnChatRequest) -> FcpnChatResponse:
             r.raise_for_status()
             data = r.json()
     except httpx.HTTPStatusError as e:
-        raise HTTPException(status_code=503,
-            detail=f"Azure AI Foundry HTTP {e.response.status_code}.")
+        raise HTTPException(status_code=503, detail=f"Error HTTP {e.response.status_code}.")
     except httpx.RequestError as e:
-        raise HTTPException(status_code=503, detail=f"No se pudo conectar a Azure: {e}")
+        raise HTTPException(status_code=503, detail=f"Error de conexión: {e}")
 
     reply = data["choices"][0]["message"]["content"]
-    cited = _detect_cited(reply, search_results if rag_used else [])
 
     return FcpnChatResponse(
         session_id=session_id,
         agent_id=body.agent_id,
         reply=reply,
-        cited_document=cited,
         search_results=search_results,
         model=data.get("model", _DEPLOYMENT),
         rag_used=rag_used,
     )
-
-
-@router.get("/resources")
-def fcpn_resources(category: Optional[str] = None):
-    files = [
-        {"id": "r1", "filename": "Guia_de_Inscripciones_2024.pdf",  "type": "pdf",  "category": "Inscripciones",
-         "download_url": "/static/docs/Guia_de_Inscripciones_2024.pdf"},
-        {"id": "r2", "filename": "Formulario_001_Inscripcion.docx", "type": "docx", "category": "Inscripciones",
-         "download_url": "/static/docs/Formulario_001_Inscripcion.docx"},
-        {"id": "r3", "filename": "Calendario_Académico.pdf",        "type": "pdf",  "category": "Calendario",
-         "download_url": "/static/docs/Calendario_Academico.pdf"},
-        {"id": "r4", "filename": "Reglamento_Academico.pdf",        "type": "pdf",  "category": "Reglamentos",
-         "download_url": "/static/docs/Reglamento_Academico.pdf"},
-        {"id": "r5", "filename": "Malla_Curricular_Informatica.pdf","type": "pdf",  "category": "Curricular",
-         "download_url": "/static/docs/Malla_Curricular_Informatica.pdf"},
-    ]
-    if category:
-        files = [f for f in files if f["category"].lower() == category.lower()]
-    return {"total": len(files), "resources": files}
 
 
 @router.get("/search")
@@ -314,11 +369,7 @@ async def fcpn_search(q: str, top: int = 5, category: Optional[str] = None):
 @router.get("/debug/config")
 def fcpn_debug_config():
     return {
-        "FCPN_AZURE_OPENAI_ENDPOINT":    _OPENAI_ENDPOINT or "❌ VACÍO",
-        "FCPN_AZURE_OPENAI_DEPLOYMENT":  _DEPLOYMENT,
-        "FCPN_AZURE_OPENAI_API_KEY_set": bool(_OPENAI_KEY),
-        "FCPN_AZURE_SEARCH_ENDPOINT":    _SEARCH_ENDPOINT or "❌ VACÍO",
-        "FCPN_AZURE_SEARCH_INDEX":       _SEARCH_INDEX or "❌ VACÍO",
-        "FCPN_AZURE_SEARCH_KEY_set":     bool(_SEARCH_QUERY_KEY),
+        "FCPN_AZURE_OPENAI_ENDPOINT": _OPENAI_ENDPOINT or "❌ VACÍO",
+        "FCPN_AZURE_SEARCH_INDEX": _SEARCH_INDEX or "❌ VACÍO",
         "rag_ready": bool(_SEARCH_ENDPOINT and _SEARCH_QUERY_KEY and _SEARCH_INDEX),
     }
