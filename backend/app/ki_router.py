@@ -36,15 +36,26 @@ from azure.ai.documentintelligence.models import AnalyzeDocumentRequest
 from pypdf import PdfReader
 from openai import AzureOpenAI, OpenAIError
 
-# ── Configuración (variables prefijadas KI_) ──────────────────────────────
-_OPENAI_ENDPOINT    = os.getenv("KI_AZURE_OPENAI_ENDPOINT", "").rstrip("/")
-_OPENAI_KEY         = os.getenv("KI_AZURE_OPENAI_API_KEY", "")
-_SEARCH_ENDPOINT    = os.getenv("KI_AZURE_SEARCH_ENDPOINT", "")
-_SEARCH_ADMIN_KEY   = os.getenv("KI_AZURE_SEARCH_ADMIN_KEY", "")
-_SEARCH_INDEX       = os.getenv("KI_AZURE_SEARCH_INDEX_NAME", "fcpn-index")
-_STORAGE_CONN       = os.getenv("KI_AZURE_STORAGE_CONNECTION_STRING", "")
-_DOC_INTEL_ENDPOINT = os.getenv("KI_AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT", "")
-_DOC_INTEL_KEY      = os.getenv("KI_AZURE_DOCUMENT_INTELLIGENCE_KEY", "")
+# ── Configuración (variables prefijadas KI_; AZURE_* como compatibilidad) ─
+def _env(primary: str, fallback: str | None = None, default: str = "") -> str:
+    value = os.getenv(primary)
+    if value:
+        return value.strip()
+    if fallback:
+        value = os.getenv(fallback)
+        if value:
+            return value.strip()
+    return default
+
+
+_OPENAI_ENDPOINT    = _env("KI_AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_ENDPOINT").rstrip("/")
+_OPENAI_KEY         = _env("KI_AZURE_OPENAI_API_KEY", "AZURE_OPENAI_API_KEY")
+_SEARCH_ENDPOINT    = _env("KI_AZURE_SEARCH_ENDPOINT", "AZURE_SEARCH_ENDPOINT").rstrip("/")
+_SEARCH_ADMIN_KEY   = _env("KI_AZURE_SEARCH_ADMIN_KEY", "AZURE_SEARCH_ADMIN_KEY")
+_SEARCH_INDEX       = _env("KI_AZURE_SEARCH_INDEX_NAME", "AZURE_SEARCH_INDEX_NAME", "fcpn-index")
+_STORAGE_CONN       = _env("KI_AZURE_STORAGE_CONNECTION_STRING", "AZURE_STORAGE_CONNECTION_STRING")
+_DOC_INTEL_ENDPOINT = _env("KI_AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT", "AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT").rstrip("/")
+_DOC_INTEL_KEY      = _env("KI_AZURE_DOCUMENT_INTELLIGENCE_KEY", "AZURE_DOCUMENT_INTELLIGENCE_KEY")
 
 _BLOB_CONTAINER       = "fcpn-docs"
 _EMBEDDING_MODEL      = "text-embedding-3-large"
@@ -66,10 +77,28 @@ def _openai():
 def _missing_openai_config() -> list[str]:
     missing = []
     if not _OPENAI_ENDPOINT:
-        missing.append("KI_AZURE_OPENAI_ENDPOINT")
+        missing.append("KI_AZURE_OPENAI_ENDPOINT o AZURE_OPENAI_ENDPOINT")
     if not _OPENAI_KEY:
-        missing.append("KI_AZURE_OPENAI_API_KEY")
+        missing.append("KI_AZURE_OPENAI_API_KEY o AZURE_OPENAI_API_KEY")
     return missing
+
+
+def _config_warnings() -> list[str]:
+    warnings = []
+    if _STORAGE_CONN.count("DefaultEndpointsProtocol=") > 1:
+        warnings.append(
+            "KI_AZURE_STORAGE_CONNECTION_STRING parece duplicado; debe empezar una sola vez con "
+            "'DefaultEndpointsProtocol=https;AccountName=...'."
+        )
+    if _OPENAI_KEY and _STORAGE_CONN and _OPENAI_KEY in _STORAGE_CONN:
+        warnings.append(
+            "KI_AZURE_OPENAI_API_KEY coincide con la AccountKey de Storage. Usa la clave de Azure OpenAI, no la de Storage."
+        )
+    if _SEARCH_ADMIN_KEY and _STORAGE_CONN and _SEARCH_ADMIN_KEY in _STORAGE_CONN:
+        warnings.append(
+            "KI_AZURE_SEARCH_ADMIN_KEY coincide con la AccountKey de Storage. Usa la clave Admin primaria/secundaria de Azure AI Search."
+        )
+    return warnings
 
 def _blob():
     return BlobServiceClient.from_connection_string(_STORAGE_CONN)
@@ -298,12 +327,14 @@ router = APIRouter(prefix="/ki", tags=["KI · Asistente General"])
 @router.get("/health")
 def ki_health():
     missing_openai = _missing_openai_config()
+    config_warnings = _config_warnings()
     return {
-        "status": "ok" if not missing_openai else "degraded",
+        "status": "ok" if not missing_openai and not config_warnings else "degraded",
         "module": "KI",
         "index": _SEARCH_INDEX,
         "openai_ready": not missing_openai,
         "missing_openai_config": missing_openai,
+        "config_warnings": config_warnings,
         "rag_ready": bool(_SEARCH_ENDPOINT and _SEARCH_ADMIN_KEY and _SEARCH_INDEX),
     }
 
@@ -377,6 +408,8 @@ def ki_sync():
 
 def startup_ki():
     """Llamar desde main.py en el evento startup."""
+    for warning in _config_warnings():
+        print(f"[KI] Config warning: {warning}")
     if not (_SEARCH_ENDPOINT and _SEARCH_ADMIN_KEY and _SEARCH_INDEX):
         print("[KI] Azure Search no configurado; se omite creación/sincronización del índice KI.")
         return
